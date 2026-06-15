@@ -7,24 +7,34 @@ setup_chinese_font()
 import matplotlib.pyplot as plt
 
 
-def _generate_sample_data(n_points: int = 1000) -> pd.DataFrame:
-    t = pd.date_range(start="2024-01-01", periods=n_points, freq="10s")
-    soc = np.linspace(100, 10, n_points)
-    ocv_base = 3.0 + 0.01 * soc + 0.05 * np.sin(soc / 10)
-    current = np.where(soc > 50, -5.0, np.where(soc > 20, -3.0, -1.0))
-    pulse_mask = (np.arange(n_points) % 50) < 5
-    current = np.where(pulse_mask, -20.0, current)
-    voltage = ocv_base + current * 0.005 + 0.02 * np.sin(np.arange(n_points) / 20)
-    temperature = 25 + 5 * np.sin(np.arange(n_points) / 100) + np.random.randn(n_points) * 0.5
-    module_ids = np.tile(["M001", "M002", "M003", "M004"], n_points // 4 + 1)[:n_points]
-    np.random.shuffle(module_ids)
-    df = pd.DataFrame({
-        "timestamp": np.repeat(t, 4)[:n_points],
-        "voltage": voltage + np.random.randn(n_points) * 0.01,
-        "current": current,
-        "temperature": temperature,
-        "module_id": module_ids,
-    })
+def _generate_sample_data(n_points: int = 2000) -> pd.DataFrame:
+    module_names = ["M001", "M002", "M003", "M004"]
+    n_per_mod = n_points // len(module_names)
+    t = pd.date_range(start="2024-01-01", periods=n_per_mod, freq="10s")
+    soc_base = np.linspace(100, 10, n_per_mod)
+    current_base = np.where(soc_base > 70, 8.0, np.where(soc_base > 30, 5.0, 2.0))
+    pulse_mask = (np.arange(n_per_mod) % 60) < 6
+    current_base = np.where(pulse_mask, 25.0, current_base)
+    temperature_base = 25 + 3 * np.sin(np.arange(n_per_mod) / 100)
+
+    all_dfs = []
+    for i, mod_id in enumerate(module_names):
+        soc_mod = soc_base - i * 3.0
+        voltage_offset = 0.02 * i
+        r_mod = 0.004 + i * 0.001
+        ocv_base = 3.0 + 0.012 * soc_mod + 0.07 * np.sin(soc_mod / 8)
+        voltage = ocv_base - current_base * r_mod + 0.015 * np.sin(np.arange(n_per_mod) / 15 + i)
+        voltage += voltage_offset + np.random.randn(n_per_mod) * 0.008
+        temp = temperature_base + i * 2.5 + np.random.randn(n_per_mod) * 0.3
+        mod_df = pd.DataFrame({
+            "timestamp": t,
+            "voltage": voltage,
+            "current": current_base * (1 + i * 0.15),
+            "temperature": temp,
+            "module_id": mod_id,
+        })
+        all_dfs.append(mod_df)
+    df = pd.concat(all_dfs, ignore_index=True)
     return df
 
 

@@ -15,6 +15,7 @@ def align_timestamps(module_data: dict[str, pd.DataFrame], max_error: float = 1.
     common_ts = ref_df["timestamp"].values
     result = pd.DataFrame({"timestamp": common_ts})
     ref_ts_sec = (common_ts - common_ts[0]).astype("timedelta64[s]").astype(float)
+    align_cols = ["voltage", "current", "temperature", "soc_ah"]
 
     for mod_id, df in module_data.items():
         if df is None or len(df) == 0:
@@ -22,7 +23,7 @@ def align_timestamps(module_data: dict[str, pd.DataFrame], max_error: float = 1.
         df = df.sort_values("timestamp").reset_index(drop=True)
         mod_ts_sec = (df["timestamp"].values - common_ts[0]).astype("timedelta64[s]").astype(float)
 
-        for col in ["voltage", "current", "temperature"]:
+        for col in align_cols:
             if col not in df.columns:
                 continue
             valid = ~np.isnan(df[col].values.astype(float))

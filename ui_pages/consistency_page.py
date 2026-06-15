@@ -39,9 +39,10 @@ def render():
         with st.spinner("分析中..."):
             aligned = dm.get_aligned_pack_data(sel_pack)
             analyzer = ConsistencyAnalyzer(st.session_state.thresholds)
-            result = analyzer.analyze_pack(aligned, modules)
+            result = analyzer.analyze_pack(aligned, modules, pack_id=sel_pack)
             st.session_state["ca_result"] = result
             st.session_state["ca_aligned"] = aligned
+            st.session_state["ca_last_pack"] = sel_pack
             st.session_state.alerts = analyzer.alerts + st.session_state.alerts
 
     if "ca_result" not in st.session_state:
@@ -53,15 +54,16 @@ def render():
     col1, col2, col3, col4 = st.columns(4)
     metrics = result.get("metrics", {})
     with col1:
+        soc_disp = np.array(metrics.get("soc_dispersion", [0]))
+        st.metric("SOC离散度-均值(%)", f"{soc_disp.mean():.3f}")
+    with col2:
         v_disp = np.array(metrics.get("voltage_dispersion", [0]))
         st.metric("电压离散度-均值(V)", f"{v_disp.mean():.4f}")
-    with col2:
+    with col3:
         t_disp = np.array(metrics.get("temperature_dispersion", [0]))
         st.metric("温差均值(°C)", f"{t_disp.mean():.2f}")
-    with col3:
-        st.metric("分析模组数量", len(metrics.get("modules", [])))
     with col4:
-        st.metric("告警数量", len(result.get("alerts", [])))
+        st.metric("分析模组数量", len(metrics.get("modules", [])))
 
     st.markdown("---")
     st.subheader("Pack内各模组分布(箱线图)")
@@ -96,16 +98,21 @@ def render():
     st.markdown("---")
     st.subheader("离散度时间趋势")
     ts = pd.to_datetime(metrics.get("timestamps", []))
-    fig, axes = plt.subplots(2, 1, figsize=(12, 6), sharex=True)
-    axes[0].plot(ts, metrics.get("voltage_dispersion", []), "b-", linewidth=0.8)
-    axes[0].set_ylabel("电压离散度 (V)")
+    fig, axes = plt.subplots(3, 1, figsize=(12, 8), sharex=True)
+    axes[0].plot(ts, metrics.get("soc_dispersion", []), "purple", linewidth=0.8)
+    axes[0].axhline(y=st.session_state.thresholds["soc_dispersion"], color="purple", linestyle="--", label="阈值")
+    axes[0].set_ylabel("SOC离散度 (%)")
+    axes[0].legend()
     axes[0].grid(True, alpha=0.3)
-    axes[1].plot(ts, metrics.get("temperature_dispersion", []), "r-", linewidth=0.8)
-    axes[1].axhline(y=st.session_state.thresholds["temperature_diff"], color="red", linestyle="--", label="阈值")
-    axes[1].set_ylabel("温差 (°C)")
-    axes[1].set_xlabel("时间")
-    axes[1].legend()
+    axes[1].plot(ts, metrics.get("voltage_dispersion", []), "b-", linewidth=0.8)
+    axes[1].set_ylabel("电压离散度 (V)")
     axes[1].grid(True, alpha=0.3)
+    axes[2].plot(ts, metrics.get("temperature_dispersion", []), "r-", linewidth=0.8)
+    axes[2].axhline(y=st.session_state.thresholds["temperature_diff"], color="red", linestyle="--", label="阈值")
+    axes[2].set_ylabel("温差 (°C)")
+    axes[2].set_xlabel("时间")
+    axes[2].legend()
+    axes[2].grid(True, alpha=0.3)
     fig.autofmt_xdate()
     st.pyplot(fig)
 
@@ -127,11 +134,45 @@ def render():
 
     if st.session_state.alerts:
         alerts_df = pd.DataFrame(st.session_state.alerts)
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            filter_level = st.multiselect("按严重级别筛选", ["high", "medium", "low"], default=["high", "medium", "low"], key="ca_alert_filter")
-        if filter_level:
-            alerts_df = alerts_df[alerts_df["严重级别"].isin(filter_level)]
+        st.caption(f"共 {len(alerts_df)} 条告警记录")
+
+        with st.expander("筛选条件", expanded=True):
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                all_packs = sorted(alerts_df["Pack编号"].unique().tolist()) if "Pack编号" in alerts_df.columns else []
+                if all_packs and all_packs[0] == "":
+                    all_packs = [p for p in all_packs if p]
+                filter_pack = st.multiselect(
+                    "按Pack编号筛选",
+                    all_packs,
+                    default=all_packs,
+                    key="ca_filter_pack"
+                )
+            with col2:
+                filter_level = st.multiselect(
+                    "按严重级别筛选",
+                    ["high", "medium", "low"],
+                    default=["high", "medium", "low"],
+                    key="ca_filter_level"
+                )
+            with col3:
+                date_range = st.date_input(
+                    "按时间范围筛选",
+                    value=[],
+                    key="ca_filter_date"
+                )
+
+            if filter_pack and "Pack编号" in alerts_df.columns:
+                alerts_df = alerts_df[alerts_df["Pack编号"].isin(filter_pack)]
+            if filter_level:
+                alerts_df = alerts_df[alerts_df["严重级别"].isin(filter_level)]
+            if len(date_range) == 2:
+                start_date = pd.Timestamp(date_range[0])
+                end_date = pd.Timestamp(date_range[1]) + pd.Timedelta(days=1)
+                alerts_df["时间_dt"] = pd.to_datetime(alerts_df["时间"])
+                alerts_df = alerts_df[(alerts_df["时间_dt"] >= start_date) & (alerts_df["时间_dt"] < end_date)]
+                alerts_df = alerts_df.drop(columns=["时间_dt"])
+
         st.dataframe(alerts_df, width="stretch")
     else:
         st.info("暂无告警记录")

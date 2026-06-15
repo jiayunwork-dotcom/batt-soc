@@ -14,11 +14,11 @@ class ConsistencyAnalyzer:
         }
         self.alerts: list[dict] = []
 
-    def analyze_pack(self, aligned_df: pd.DataFrame, module_ids: list[str]) -> dict:
+    def analyze_pack(self, aligned_df: pd.DataFrame, module_ids: list[str], pack_id: str = "") -> dict:
         if aligned_df is None or len(aligned_df) < 2:
             return {}
 
-        soc_cols = [f"{m}_soc_ah" for m in module_ids if f"{m}_voltage" in aligned_df.columns]
+        soc_cols = [f"{m}_soc_ah" for m in module_ids if f"{m}_soc_ah" in aligned_df.columns]
         v_cols = [f"{m}_voltage" for m in module_ids if f"{m}_voltage" in aligned_df.columns]
         t_cols = [f"{m}_temperature" for m in module_ids if f"{m}_temperature" in aligned_df.columns]
 
@@ -48,6 +48,10 @@ class ConsistencyAnalyzer:
             v_vals = []
             t_vals = []
             for m in valid_modules:
+                if f"{m}_soc_ah" in aligned_df.columns:
+                    s = aligned_df[f"{m}_soc_ah"].iloc[idx]
+                    if not np.isnan(s):
+                        soc_vals.append(s)
                 if f"{m}_voltage" in aligned_df.columns:
                     v = aligned_df[f"{m}_voltage"].iloc[idx]
                     if not np.isnan(v):
@@ -56,18 +60,21 @@ class ConsistencyAnalyzer:
                     t = aligned_df[f"{m}_temperature"].iloc[idx]
                     if not np.isnan(t):
                         t_vals.append(t)
+            if soc_vals and len(soc_vals) > 1:
+                result["metrics"]["soc_dispersion"].append(float(np.std(soc_vals)))
+            else:
+                result["metrics"]["soc_dispersion"].append(0.0)
             if v_vals:
                 result["metrics"]["voltage_dispersion"].append(float(np.std(v_vals)))
             else:
                 result["metrics"]["voltage_dispersion"].append(0.0)
-            if t_vals:
+            if t_vals and len(t_vals) > 1:
                 result["metrics"]["temperature_dispersion"].append(float(np.max(t_vals) - np.min(t_vals)))
             else:
                 result["metrics"]["temperature_dispersion"].append(0.0)
-            result["metrics"]["soc_dispersion"].append(0.0)
 
         result["shortboards"] = self._detect_shortboards(aligned_df, valid_modules, r_est)
-        self._check_alerts(aligned_df, valid_modules, result["metrics"], r_est)
+        self._check_alerts(aligned_df, valid_modules, result["metrics"], r_est, pack_id)
         result["alerts"] = self.alerts[-10:] if self.alerts else []
         result["r_estimates"] = r_est
         return result
@@ -98,11 +105,17 @@ class ConsistencyAnalyzer:
         shortboards = []
         v_means = {}
         t_means = {}
+        soc_means = {}
         for m in module_ids:
             if f"{m}_voltage" in aligned_df.columns:
                 v_means[m] = np.nanmean(aligned_df[f"{m}_voltage"].values.astype(float))
             if f"{m}_temperature" in aligned_df.columns:
                 t_means[m] = np.nanmean(aligned_df[f"{m}_temperature"].values.astype(float))
+            if f"{m}_soc_ah" in aligned_df.columns:
+                soc_means[m] = np.nanmean(aligned_df[f"{m}_soc_ah"].values.astype(float))
+        if soc_means:
+            min_soc_module = min(soc_means, key=soc_means.get)
+            shortboards.append({"类型": "SOC最低", "模组": min_soc_module, "值": round(soc_means[min_soc_module], 2), "单位": "%"})
         if r_est:
             max_r_module = max(r_est, key=r_est.get)
             shortboards.append({"类型": "内阻最高", "模组": max_r_module, "值": round(r_est[max_r_module], 6), "单位": "Ω"})
@@ -114,24 +127,29 @@ class ConsistencyAnalyzer:
             shortboards.append({"类型": "温度最高", "模组": max_t_module, "值": round(t_means[max_t_module], 2), "单位": "°C"})
         return shortboards
 
-    def _check_alerts(self, aligned_df: pd.DataFrame, module_ids: list[str], metrics: dict, r_est: dict):
+    def _check_alerts(self, aligned_df: pd.DataFrame, module_ids: list[str], metrics: dict, r_est: dict, pack_id: str = ""):
         if not module_ids:
             return
 
+        soc_disp = np.array(metrics.get("soc_dispersion", []))
+        if len(soc_disp) > 0 and (soc_disp > self.thresholds["soc_dispersion"]).any():
+            self._add_alert("SOC离散度过大", f"Pack内SOC标准差超过{self.thresholds['soc_dispersion']}%", "high", pack_id=pack_id)
+
         temp_disp = np.array(metrics["temperature_dispersion"])
         if (temp_disp > self.thresholds["temperature_diff"]).any():
-            self._add_alert("温度差异过大", f"Pack内最大温差超过{self.thresholds['temperature_diff']}°C", "high")
+            self._add_alert("温度差异过大", f"Pack内最大温差超过{self.thresholds['temperature_diff']}°C", "high", pack_id=pack_id)
 
         if r_est:
             r_values = list(r_est.values())
             r_mean = np.mean(r_values)
             for m, r_val in r_est.items():
                 if r_val > r_mean * self.thresholds["internal_resistance_ratio"]:
-                    self._add_alert("单体内阻过高", f"模组{m}内阻({r_val:.6f}Ω)超过均值{r_mean:.6f}Ω的{self.thresholds['internal_resistance_ratio']*100:.0f}%", "medium", m)
+                    self._add_alert("单体内阻过高", f"模组{m}内阻({r_val:.6f}Ω)超过均值{r_mean:.6f}Ω的{self.thresholds['internal_resistance_ratio']*100:.0f}%", "medium", module=m, pack_id=pack_id)
 
-    def _add_alert(self, alert_type: str, message: str, level: str, module: Optional[str] = None):
+    def _add_alert(self, alert_type: str, message: str, level: str, module: Optional[str] = None, pack_id: str = ""):
         alert = {
             "时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "Pack编号": pack_id,
             "类型": alert_type,
             "严重级别": level,
             "模组": module or "-",
