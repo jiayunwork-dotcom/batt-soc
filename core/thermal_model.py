@@ -322,7 +322,7 @@ class ThermalRunawayAnalyzer:
         self.thermal_conductivity = thermal_conductivity
         self.module_mass = module_mass_kg
         self.module_cp = module_cp_j_kgk
-        self.module_distance = module_distance
+        self.module_distance = module_distance_m
 
     def analyze(
         self,

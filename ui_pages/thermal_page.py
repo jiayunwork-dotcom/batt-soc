@@ -389,8 +389,8 @@ def _render_sensitivity_analysis(params, t_initial, ambient_config, time_s, curr
         cbar = plt.colorbar(im, ax=ax)
         cbar.set_label("最高温度 (°C)")
 
-        ax.set_xlabel(two_sens_result["param2_label"])
-        ax.set_ylabel(two_sens_result["param1_label"])
+        ax.set_xlabel(param2_sel)
+        ax.set_ylabel(param1_sel)
         ax.set_title(f"双参数交互作用 - 最高温度响应曲面")
         ax.grid(True, alpha=0.3)
 
@@ -403,7 +403,8 @@ def _render_sensitivity_analysis(params, t_initial, ambient_config, time_s, curr
             index=[f"{v:.4f}" for v in param1_vals],
             columns=[f"{v:.4f}" for v in param2_vals],
         )
-        df_table.index.name = two_sens_result["param1_label"] + " ↓"
+        df_table.index.name = param1_sel + " ↓"
+        df_table.columns.name = param2_sel + " →"
         st.dataframe(df_table.style.format("{:.2f}"))
 
 
@@ -456,7 +457,7 @@ def _render_safety_boundary(time_s, temperature):
                 temp_threshold,
                 where=over_temp_mask[:min_len],
                 color="red",
-                alpha=0.3,
+                alpha=0.5,
                 label="超温区域",
             )
 
@@ -470,7 +471,7 @@ def _render_safety_boundary(time_s, temperature):
                 temperature[:min_len_r],
                 where=over_rate_mask[:min_len_r],
                 color="orange",
-                alpha=0.2,
+                alpha=0.4,
                 label="温升速率预警区域",
             )
 
@@ -490,7 +491,7 @@ def _render_safety_boundary(time_s, temperature):
                 rate_threshold,
                 where=over_rate_mask[:min_len_r],
                 color="orange",
-                alpha=0.3,
+                alpha=0.5,
                 label="超速率区域",
             )
         ax_rate.set_ylabel("温升速率 (°C/min)")
