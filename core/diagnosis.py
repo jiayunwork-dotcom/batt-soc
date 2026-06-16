@@ -23,11 +23,12 @@ class BatteryDiagnosis:
     def generate_degradation_data(n_cycles: int = 50, q0: float = 100.0, r0_0: float = 0.01) -> tuple[pd.DataFrame, list[pd.DataFrame]]:
         np.random.seed(42)
         cycles = np.arange(1, n_cycles + 1)
-        k_cap = 0.08
-        k_r = 0.0002
+        k_cap = 0.5
+        k_r = 0.000025
+        k_r1 = 0.000012
         capacity = q0 - k_cap * np.sqrt(cycles) + np.random.randn(n_cycles) * 0.3
-        r0 = r0_0 + k_r * cycles + np.random.randn(n_cycles) * 0.0003
-        r1 = 0.005 + 0.00005 * cycles + np.random.randn(n_cycles) * 0.0001
+        r0 = r0_0 + k_r * cycles + np.random.randn(n_cycles) * 0.00005
+        r1 = 0.005 + k_r1 * cycles + np.random.randn(n_cycles) * 0.00005
 
         cycle_df = pd.DataFrame({
             "循环次数": cycles,
@@ -497,8 +498,15 @@ class BatteryDiagnosis:
         soh_mean = float(np.mean(soh_values)) if soh_values else np.nan
         health_score = max(0, min(100, soh_mean if not np.isnan(soh_mean) else 0))
         level_penalty = {"警告": 3, "严重": 8, "危险": 15}
+        fault_types = set()
         for ev in fault_events:
-            health_score -= level_penalty.get(ev["严重等级"], 5)
+            rule = ev.get("触发规则", "未知")
+            if rule not in fault_types:
+                fault_types.add(rule)
+                health_score -= level_penalty.get(ev["严重等级"], 5)
+        max_penalty = 25
+        if soh_mean is not None:
+            health_score = max(health_score, soh_mean - max_penalty)
         health_score = max(0, min(100, health_score))
         remaining_cycles = np.nan
         if "容量衰减模型" in soh_models:
@@ -506,10 +514,28 @@ class BatteryDiagnosis:
             func = m.get("func")
             if func is not None:
                 try:
-                    N_test = np.linspace(cycle_df["循环次数"].max(), cycle_df["循环次数"].max() + 5000, 10000)
-                    soh_extrap = func(N_test)
-                    idx = np.argmin(np.abs(soh_extrap - 80))
-                    remaining_cycles = float(N_test[idx] - cycle_df["循环次数"].max())
+                    current_max_cycle = cycle_df["循环次数"].max()
+                    current_soh = func(current_max_cycle) if hasattr(func, '__call__') else 100
+                    if current_soh <= 80:
+                        remaining_cycles = 0.0
+                    else:
+                        k_est = m.get("params", {}).get("k", 0.1)
+                        q0_est = m.get("params", {}).get("Q0", 100.0)
+                        soh_eol = 80.0
+                        q_eol = soh_eol / 100.0 * self.q0_nominal
+                        if k_est > 0:
+                            N_eol_est = ((q0_est - q_eol) / k_est) ** 2
+                            remaining_cycles = max(0, float(N_eol_est - current_max_cycle))
+                        else:
+                            remaining_cycles = np.nan
+                        if np.isnan(remaining_cycles) or remaining_cycles > 1e6:
+                            N_test = np.linspace(current_max_cycle, current_max_cycle + 100000, 100000)
+                            soh_extrap = func(N_test)
+                            if soh_extrap[-1] <= 80:
+                                idx = np.argmin(np.abs(soh_extrap - 80))
+                                remaining_cycles = float(N_test[idx] - current_max_cycle)
+                            else:
+                                remaining_cycles = float(N_test[-1] - current_max_cycle)
                 except Exception:
                     remaining_cycles = np.nan
         suggestions = []
