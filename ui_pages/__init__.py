@@ -6,6 +6,7 @@ from . import life_page
 from . import consistency_page
 from . import thermal_page
 from . import report_page
+from . import diagnosis_page
 
 __all__ = [
     "data_management_page",
@@ -16,4 +17,5 @@ __all__ = [
     "consistency_page",
     "thermal_page",
     "report_page",
+    "diagnosis_page",
 ]

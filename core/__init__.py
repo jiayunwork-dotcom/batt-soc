@@ -6,6 +6,7 @@ from .life_prediction import LifePrediction
 from .consistency import ConsistencyAnalyzer
 from .thermal_model import LumpedThermalModel, ThermalSensitivityAnalyzer, ThermalSafetyAnalyzer, ThermalInconsistencyAnalyzer
 from .report import ReportGenerator
+from .diagnosis import BatteryDiagnosis
 
 __all__ = [
     "DataManager",
@@ -20,4 +21,5 @@ __all__ = [
     "ThermalSafetyAnalyzer",
     "ThermalInconsistencyAnalyzer",
     "ReportGenerator",
+    "BatteryDiagnosis",
 ]

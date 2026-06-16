@@ -41,6 +41,7 @@ page = st.sidebar.radio(
         "🌡️ 电池热管理仿真与分析",
         "🔮 循环寿命预测",
         "⚠️ 一致性分析与预警",
+        "🔍 电池故障诊断与SOH估计",
         "📑 报告导出",
     ],
 )
@@ -99,6 +100,10 @@ elif page == "🔮 循环寿命预测":
 elif page == "⚠️ 一致性分析与预警":
     from ui_pages import consistency_page
     consistency_page.render()
+
+elif page == "🔍 电池故障诊断与SOH估计":
+    from ui_pages import diagnosis_page
+    diagnosis_page.render()
 
 elif page == "📑 报告导出":
     from ui_pages import report_page
