@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import time as _time
 from typing import Optional, Callable
 
 
@@ -12,6 +13,7 @@ class BaseKalmanFilter:
         self.Q_cov: Optional[np.ndarray] = None
         self.R_cov: Optional[np.ndarray] = None
         self.history: dict = {}
+        self.elapsed_time: float = 0.0
 
     def reset(self, initial_soc: float = 100.0, params: Optional[dict] = None):
         self.params = params or {"R0": 0.01, "R1": 0.005, "C1": 1000.0}
@@ -25,6 +27,7 @@ class BaseKalmanFilter:
 
 class EKF(BaseKalmanFilter):
     def run(self, df: pd.DataFrame) -> pd.DataFrame:
+        t0 = _time.perf_counter()
         df = df.sort_values("timestamp").reset_index(drop=True)
         if self.x is None:
             self.reset()
@@ -74,6 +77,7 @@ class EKF(BaseKalmanFilter):
             self.history["cov"].append(np.diag(P).tolist())
         self.x = x
         self.P = P
+        self.elapsed_time = _time.perf_counter() - t0
         result = df.copy()
         result["soc_ekf"] = soc_est
         result["v_predicted"] = v_pred
@@ -118,6 +122,7 @@ class UKF(BaseKalmanFilter):
         return sigmas, Wm, Wc
 
     def run(self, df: pd.DataFrame) -> pd.DataFrame:
+        t0 = _time.perf_counter()
         df = df.sort_values("timestamp").reset_index(drop=True)
         if self.x is None:
             self.reset()
@@ -170,14 +175,18 @@ class UKF(BaseKalmanFilter):
             P = P_pred - K @ Pxz.T
             soc_est[k] = x[0]
             v_pred[k] = z_pred
+            self.history["k_gain"].append(K.flatten().tolist())
+            self.history["cov"].append(np.diag(P).tolist())
         self.x = x
         self.P = P
+        self.elapsed_time = _time.perf_counter() - t0
         result = df.copy()
         result["soc_ukf"] = soc_est
         result["v_predicted"] = v_pred
         result["soc_ah"] = self._ah_integration(df)
         self.history["soc"] = soc_est.tolist()
         self.history["v_pred"] = v_pred.tolist()
+        self.history["time"] = df["timestamp"].astype(str).tolist()
         return result
 
     def _ah_integration(self, df: pd.DataFrame) -> np.ndarray:
