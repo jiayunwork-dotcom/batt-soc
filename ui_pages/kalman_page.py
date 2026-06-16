@@ -4,7 +4,6 @@ import numpy as np
 from utils.plot_config import setup_chinese_font
 setup_chinese_font()
 import matplotlib.pyplot as plt
-from matplotlib.colors import to_rgba
 from core import EKF, UKF, OCVSOCCalibrator
 
 
@@ -23,6 +22,22 @@ def _compute_stats(result_df, soc_col, kf_label):
         stats["max_dev"] = None
         stats["rmse"] = None
     return stats
+
+
+def _render_stat_cards(stats, label_prefix=""):
+    mc1, mc2, mc3, mc4, mc5, mc6 = st.columns(6)
+    with mc1:
+        st.metric(f"{label_prefix}最大SOC (%)", f"{stats['max']:.3f}")
+    with mc2:
+        st.metric(f"{label_prefix}最小SOC (%)", f"{stats['min']:.3f}")
+    with mc3:
+        st.metric(f"{label_prefix}均值SOC (%)", f"{stats['mean']:.3f}")
+    with mc4:
+        st.metric(f"{label_prefix}终末SOC (%)", f"{stats['final']:.3f}")
+    with mc5:
+        st.metric(f"{label_prefix}最大偏差 (%)", f"{stats['max_dev']:.3f}" if stats["max_dev"] is not None else "N/A")
+    with mc6:
+        st.metric(f"{label_prefix}RMSE (%)", f"{stats['rmse']:.3f}" if stats["rmse"] is not None else "N/A")
 
 
 def _run_kf(kf_cls, ocv_func, q0, df, init_soc, params, q_soc, q_rc, r_v):
@@ -60,16 +75,16 @@ def render():
     compare_mode = st.toggle("🔀 对比模式", value=False, help="开启后同时运行EKF和UKF进行对比")
 
     with st.expander("参数配置 (过程噪声Q / 观测噪声R)", expanded=False):
-        col1, col2 = st.columns(2)
-        with col1:
+        pcol1, pcol2 = st.columns(2)
+        with pcol1:
             q_soc = st.number_input("Q矩阵 - SOC过程噪声方差", value=1e-4, format="%.1e", step=1e-5)
             q_rc = st.number_input("Q矩阵 - Vrc过程噪声方差", value=1e-6, format="%.1e", step=1e-7)
-        with col2:
+        with pcol2:
             r_v = st.number_input("R矩阵 - 电压观测噪声方差", value=1e-3, format="%.1e", step=1e-4)
 
-        r0 = st.number_input("欧姆内阻 R0 (Ω)", value=0.01, format="%.5f", step=0.001)
-        r1 = st.number_input("极化内阻 R1 (Ω)", value=0.005, format="%.5f", step=0.001)
-        c1 = st.number_input("极化电容 C1 (F)", value=1000.0, format="%.1f", step=100.0)
+        param_r0 = st.number_input("欧姆内阻 R0 (Ω)", value=0.01, format="%.5f", step=0.001)
+        param_r1 = st.number_input("极化内阻 R1 (Ω)", value=0.005, format="%.5f", step=0.001)
+        param_c1 = st.number_input("极化电容 C1 (F)", value=1000.0, format="%.1f", step=100.0)
         init_soc = st.slider("初始SOC (%)", 0.0, 100.0, 100.0, 1.0)
 
     if "ocv_calibrator" not in st.session_state or st.session_state["ocv_calibrator"].ocv_mean is None:
@@ -86,7 +101,7 @@ def render():
     if run_btn or "kf_result_df" in st.session_state:
         if run_btn:
             with st.spinner("SOC估计中..."):
-                params = {"R0": r0, "R1": r1, "C1": c1}
+                params = {"R0": param_r0, "R1": param_r1, "C1": param_c1}
                 if compare_mode:
                     ekf_df, ekf_inst = _run_kf(EKF, ocv_func, q0, df, init_soc, params, q_soc, q_rc, r_v)
                     ukf_df, ukf_inst = _run_kf(UKF, ocv_func, q0, df, init_soc, params, q_soc, q_rc, r_v)
@@ -122,35 +137,14 @@ def render():
             ekf_stats = _compute_stats(result_df, "soc_ekf", "EKF")
             ukf_stats = _compute_stats(ukf_df, "soc_ukf", "UKF")
 
-            st.markdown("#### 📊 EKF 统计摘要")
-            c1, c2, c3, c4, c5, c6 = st.columns(6)
-            with c1:
-                st.metric("最大SOC (%)", f"{ekf_stats['max']:.2f}")
-            with c2:
-                st.metric("最小SOC (%)", f"{ekf_stats['min']:.2f}")
-            with c3:
-                st.metric("均值SOC (%)", f"{ekf_stats['mean']:.2f}")
-            with c4:
-                st.metric("终末SOC (%)", f"{ekf_stats['final']:.2f}")
-            with c5:
-                st.metric("最大偏差 (%)", f"{ekf_stats['max_dev']:.3f}" if ekf_stats["max_dev"] is not None else "N/A")
-            with c6:
-                st.metric("RMSE (%)", f"{ekf_stats['rmse']:.3f}" if ekf_stats["rmse"] is not None else "N/A")
-
-            st.markdown("#### 📊 UKF 统计摘要")
-            c1, c2, c3, c4, c5, c6 = st.columns(6)
-            with c1:
-                st.metric("最大SOC (%)", f"{ukf_stats['max']:.2f}")
-            with c2:
-                st.metric("最小SOC (%)", f"{ukf_stats['min']:.2f}")
-            with c3:
-                st.metric("均值SOC (%)", f"{ukf_stats['mean']:.2f}")
-            with c4:
-                st.metric("终末SOC (%)", f"{ukf_stats['final']:.2f}")
-            with c5:
-                st.metric("最大偏差 (%)", f"{ukf_stats['max_dev']:.3f}" if ukf_stats["max_dev"] is not None else "N/A")
-            with c6:
-                st.metric("RMSE (%)", f"{ukf_stats['rmse']:.3f}" if ukf_stats["rmse"] is not None else "N/A")
+            st.markdown("#### 📊 统计摘要对比")
+            left_col, right_col = st.columns(2)
+            with left_col:
+                st.markdown("**EKF**")
+                _render_stat_cards(ekf_stats)
+            with right_col:
+                st.markdown("**UKF**")
+                _render_stat_cards(ukf_stats)
 
             fig, axes = plt.subplots(2, 1, figsize=(12, 7), sharex=True, gridspec_kw={"height_ratios": [2, 1]})
             axes[0].plot(result_df["timestamp"], result_df["soc_ekf"], "r-", label="EKF估计", linewidth=1.2)
@@ -174,14 +168,14 @@ def render():
             compare_data = {
                 "指标": ["RMSE (%)", "最大偏差 (%)", "计算耗时 (s)"],
                 "EKF": [
-                    f"{ekf_stats['rmse']:.4f}" if ekf_stats["rmse"] is not None else "N/A",
-                    f"{ekf_stats['max_dev']:.4f}" if ekf_stats["max_dev"] is not None else "N/A",
-                    f"{ekf_elapsed:.4f}",
+                    f"{ekf_stats['rmse']:.3f}" if ekf_stats["rmse"] is not None else "N/A",
+                    f"{ekf_stats['max_dev']:.3f}" if ekf_stats["max_dev"] is not None else "N/A",
+                    f"{ekf_elapsed:.3f}",
                 ],
                 "UKF": [
-                    f"{ukf_stats['rmse']:.4f}" if ukf_stats["rmse"] is not None else "N/A",
-                    f"{ukf_stats['max_dev']:.4f}" if ukf_stats["max_dev"] is not None else "N/A",
-                    f"{ukf_elapsed:.4f}",
+                    f"{ukf_stats['rmse']:.3f}" if ukf_stats["rmse"] is not None else "N/A",
+                    f"{ukf_stats['max_dev']:.3f}" if ukf_stats["max_dev"] is not None else "N/A",
+                    f"{ukf_elapsed:.3f}",
                 ],
             }
             st.table(pd.DataFrame(compare_data))
@@ -238,19 +232,7 @@ def render():
             stats = _compute_stats(result_df, soc_col, kf_type_name)
 
             st.markdown("#### 📊 统计摘要")
-            c1, c2, c3, c4, c5, c6 = st.columns(6)
-            with c1:
-                st.metric("最大SOC (%)", f"{stats['max']:.2f}")
-            with c2:
-                st.metric("最小SOC (%)", f"{stats['min']:.2f}")
-            with c3:
-                st.metric("均值SOC (%)", f"{stats['mean']:.2f}")
-            with c4:
-                st.metric("终末SOC (%)", f"{stats['final']:.2f}")
-            with c5:
-                st.metric("最大偏差 (%)", f"{stats['max_dev']:.3f}" if stats["max_dev"] is not None else "N/A")
-            with c6:
-                st.metric("RMSE (%)", f"{stats['rmse']:.3f}" if stats["rmse"] is not None else "N/A")
+            _render_stat_cards(stats)
 
             fig, axes = plt.subplots(2, 1, figsize=(12, 7), sharex=True, gridspec_kw={"height_ratios": [2, 1]})
             axes[0].plot(result_df["timestamp"], result_df[soc_col], "r-", label=f"{kf_type_name}估计", linewidth=1.2)
@@ -302,7 +284,7 @@ def render():
     if sens_btn or "kf_sens_results" in st.session_state:
         if sens_btn:
             with st.spinner("正在运行灵敏度分析（多参数扰动）..."):
-                params = {"R0": r0, "R1": r1, "C1": c1}
+                params = {"R0": param_r0, "R1": param_r1, "C1": param_c1}
                 perturbations = [0.5, 0.8, 1.0, 1.2, 1.5]
                 q_perturb_labels = ["Q×0.5", "Q×0.8", "基准", "Q×1.2", "Q×1.5"]
                 r_perturb_labels = ["R×0.5", "R×0.8", "基准", "R×1.2", "R×1.5"]
@@ -328,20 +310,19 @@ def render():
                 st.session_state["kf_sens_results"] = {"q": q_sens_results, "r": r_sens_results}
 
         sens = st.session_state["kf_sens_results"]
-        ts = df["timestamp"].values
 
         q_results = sens["q"]
-        q_socs = np.array([r["soc"] for r in q_results])
+        q_socs = np.array([item["soc"] for item in q_results])
         q_max = q_socs.max(axis=0)
         q_min = q_socs.min(axis=0)
 
         fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
         axes[0].fill_between(range(len(q_max)), q_min, q_max, alpha=0.25, color="red", label="Q扰动范围")
-        for r in q_results:
-            lw = 1.5 if r["factor"] == 1.0 else 0.7
-            ls = "-" if r["factor"] == 1.0 else "--"
-            axes[0].plot(r["soc"], linewidth=lw, linestyle=ls, label=r["label"])
+        for item in q_results:
+            lw = 1.5 if item["factor"] == 1.0 else 0.7
+            ls = "-" if item["factor"] == 1.0 else "--"
+            axes[0].plot(item["soc"], linewidth=lw, linestyle=ls, label=item["label"])
         axes[0].set_title("Q矩阵参数扰动对SOC估计的影响")
         axes[0].set_xlabel("时间步")
         axes[0].set_ylabel("SOC (%)")
@@ -349,15 +330,15 @@ def render():
         axes[0].grid(True, alpha=0.3)
 
         r_results = sens["r"]
-        r_socs = np.array([r["soc"] for r in r_results])
+        r_socs = np.array([item["soc"] for item in r_results])
         r_max = r_socs.max(axis=0)
         r_min = r_socs.min(axis=0)
 
         axes[1].fill_between(range(len(r_max)), r_min, r_max, alpha=0.25, color="blue", label="R扰动范围")
-        for r in r_results:
-            lw = 1.5 if r["factor"] == 1.0 else 0.7
-            ls = "-" if r["factor"] == 1.0 else "--"
-            axes[1].plot(r["soc"], linewidth=lw, linestyle=ls, label=r["label"])
+        for item in r_results:
+            lw = 1.5 if item["factor"] == 1.0 else 0.7
+            ls = "-" if item["factor"] == 1.0 else "--"
+            axes[1].plot(item["soc"], linewidth=lw, linestyle=ls, label=item["label"])
         axes[1].set_title("R矩阵参数扰动对SOC估计的影响")
         axes[1].set_xlabel("时间步")
         axes[1].set_ylabel("SOC (%)")
@@ -368,10 +349,9 @@ def render():
         st.pyplot(fig)
 
         st.markdown("##### 灵敏度分析RMSE汇总")
-        q_rmse_data = {"扰动水平": [r["label"] for r in q_results], "Q扰动RMSE (%)": [f"{r['rmse']:.4f}" if r["rmse"] is not None else "N/A" for r in q_results]}
-        r_rmse_data = {"扰动水平": [r["label"] for r in r_results], "R扰动RMSE (%)": [f"{r['rmse']:.4f}" if r["rmse"] is not None else "N/A" for r in r_results]}
-        merged = {k: v + r_rmse_data.get(k, []) for k, v in q_rmse_data.items()}
-        merged["R扰动RMSE (%)"] = [""] * len(q_results) + [f"{r['rmse']:.4f}" if r["rmse"] is not None else "N/A" for r in r_results]
-        merged["扰动水平"] = [r["label"] for r in q_results] + [r["label"] for r in r_results]
-        merged["扰动参数"] = ["Q"] * len(q_results) + ["R"] * len(r_results)
-        st.table(pd.DataFrame({"扰动参数": merged["扰动参数"], "扰动水平": merged["扰动水平"], "RMSE (%)": [f"{r['rmse']:.4f}" if r["rmse"] is not None else "N/A" for r in q_results] + [f"{r['rmse']:.4f}" if r["rmse"] is not None else "N/A" for r in r_results]}))
+        sens_table_data = []
+        for item in q_results:
+            sens_table_data.append({"扰动参数": "Q", "扰动水平": item["label"], "RMSE (%)": f"{item['rmse']:.3f}" if item["rmse"] is not None else "N/A"})
+        for item in r_results:
+            sens_table_data.append({"扰动参数": "R", "扰动水平": item["label"], "RMSE (%)": f"{item['rmse']:.3f}" if item["rmse"] is not None else "N/A"})
+        st.table(pd.DataFrame(sens_table_data))
