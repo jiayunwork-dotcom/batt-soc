@@ -4,19 +4,25 @@ import numpy as np
 from utils.plot_config import setup_chinese_font
 setup_chinese_font()
 import matplotlib.pyplot as plt
-from core.thermal_model import LumpedThermalModel, ThermalSensitivityAnalyzer, ThermalSafetyAnalyzer, ThermalInconsistencyAnalyzer
+from core.thermal_model import LumpedThermalModel, ThermalSensitivityAnalyzer, ThermalSafetyAnalyzer, ThermalInconsistencyAnalyzer, ThermalRunawayAnalyzer
 
 
 def _get_soc_curve(dm, sel_pack, sel_mod, df):
+    soc_source = "安时积分法"
     if "kf_result_df" in st.session_state:
         kf_df = st.session_state["kf_result_df"]
-        if "soc_ekf" in kf_df.columns:
-            return kf_df["soc_ekf"].values
-        if "soc_ukf" in kf_df.columns:
-            return kf_df["soc_ukf"].values
+        soc_vals = None
+        if "soc_ekf" in kf_df.columns and len(kf_df) == len(df):
+            soc_vals = kf_df["soc_ekf"].values
+            soc_source = "扩展卡尔曼滤波(EKF)"
+        elif "soc_ukf" in kf_df.columns and len(kf_df) == len(df):
+            soc_vals = kf_df["soc_ukf"].values
+            soc_source = "无迹卡尔曼滤波(UKF)"
+        if soc_vals is not None:
+            return soc_vals, soc_source
     if "soc_ah" in df.columns:
-        return df["soc_ah"].values
-    return np.full(len(df), 50.0)
+        return df["soc_ah"].values, soc_source
+    return np.full(len(df), 50.0), soc_source
 
 
 def _prepare_time_series(df):
@@ -88,7 +94,9 @@ def _render_coupling_analysis(dm, sel_pack, sel_mod, df, params, t_initial, ambi
 
     time_s = _prepare_time_series(df)
     current = df["current"].values.astype(float)
-    soc = _get_soc_curve(dm, sel_pack, sel_mod, df)
+    soc, soc_source = _get_soc_curve(dm, sel_pack, sel_mod, df)
+
+    st.info(f"📊 当前使用的SOC数据来源：**{soc_source}**")
 
     if len(time_s) != len(current):
         min_len = min(len(time_s), len(current), len(soc))
@@ -122,6 +130,7 @@ def _render_coupling_analysis(dm, sel_pack, sel_mod, df, params, t_initial, ambi
             st.session_state["th_sim_time_s"] = time_s
             st.session_state["th_sim_current"] = current
             st.session_state["th_sim_soc"] = soc
+            st.session_state["th_sim_soc_source"] = soc_source
 
     if "th_sim_result" not in st.session_state:
         st.info('请点击"运行热仿真"开始计算')
@@ -292,6 +301,111 @@ def _render_sensitivity_analysis(params, t_initial, ambient_config, time_s, curr
                 })
         st.table(pd.DataFrame(table_data))
 
+    st.markdown("---")
+    st.subheader("🔄 双参数交互灵敏度分析")
+
+    param_options = [
+        "cp_j_kgk", "h_conv_w_m2k", "mass_kg",
+        "r0_ohm", "r1_ohm", "c1_f", "dentropy_mv_k"
+    ]
+    param_labels = [
+        "比热容 Cp", "对流系数 h", "质量 m",
+        "欧姆内阻 R0", "极化内阻 R1", "极化电容 C1", "熵变系数 dOCV/dT"
+    ]
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        param1_sel = st.selectbox("选择参数1", param_labels, index=0, key="th_sens_p1")
+    with col2:
+        param2_sel = st.selectbox("选择参数2", param_labels, index=1, key="th_sens_p2")
+    with col3:
+        pert_range = st.number_input("扰动范围 (±)", value=0.3, min_value=0.05, max_value=0.8, step=0.05, format="%.2f", key="th_sens_pert_range")
+        n_levels = st.number_input("每个参数水平数", value=5, min_value=3, max_value=9, step=2, key="th_sens_n_levels")
+
+    two_param_btn = st.button("运行双参数交互分析", key="th_sens_2d_run")
+
+    if two_param_btn or "th_sens_2d_result" in st.session_state:
+        if two_param_btn:
+            with st.spinner(f"正在进行双参数网格扫描（{int(n_levels)}×{int(n_levels)}={int(n_levels*n_levels)} 个组合）..."):
+                param1_name = param_options[param_labels.index(param1_sel)]
+                param2_name = param_options[param_labels.index(param2_sel)]
+                model = LumpedThermalModel(params)
+                t_amb_const = ambient_config["value"] if ambient_config["mode"] == "恒定值" else None
+                analyzer = ThermalSensitivityAnalyzer(model)
+                two_sens_result = analyzer.analyze_two_param(
+                    param1_name=param1_name,
+                    param2_name=param2_name,
+                    time_s=time_s,
+                    current=current,
+                    soc=soc,
+                    t_initial=t_initial,
+                    t_amb_const=t_amb_const,
+                    perturbation_range=pert_range,
+                    n_levels=int(n_levels),
+                )
+                st.session_state["th_sens_2d_result"] = two_sens_result
+
+        two_sens_result = st.session_state["th_sens_2d_result"]
+
+        mc1, mc2, mc3 = st.columns(3)
+        with mc1:
+            st.metric("最高温度最大值 (°C)", f"{two_sens_result['t_max_max']:.2f}")
+        with mc2:
+            st.metric("最高温度最小值 (°C)", f"{two_sens_result['t_max_min']:.2f}")
+        with mc3:
+            temp_range = two_sens_result['t_max_max'] - two_sens_result['t_max_min']
+            st.metric("温度变化范围 (°C)", f"{temp_range:.2f}")
+
+        st.markdown("#### 最高温度响应曲面热力图")
+        fig, ax = plt.subplots(figsize=(10, 8))
+
+        t_max_grid = np.array(two_sens_result["t_max_grid"])
+        param1_vals = two_sens_result["param1_values"]
+        param2_vals = two_sens_result["param2_values"]
+
+        im = ax.imshow(
+            t_max_grid,
+            origin="lower",
+            aspect="auto",
+            cmap="YlOrRd",
+            extent=[
+                min(param2_vals),
+                max(param2_vals),
+                min(param1_vals),
+                max(param1_vals),
+            ],
+        )
+
+        for i in range(len(param1_vals)):
+            for j in range(len(param2_vals)):
+                ax.text(
+                    param2_vals[j], param1_vals[i],
+                    f"{t_max_grid[i, j]:.1f}",
+                    ha="center", va="center",
+                    fontsize=8,
+                    color="black" if t_max_grid[i, j] < (two_sens_result['t_max_max'] + two_sens_result['t_max_min']) / 2 else "white",
+                )
+
+        cbar = plt.colorbar(im, ax=ax)
+        cbar.set_label("最高温度 (°C)")
+
+        ax.set_xlabel(two_sens_result["param2_label"])
+        ax.set_ylabel(two_sens_result["param1_label"])
+        ax.set_title(f"双参数交互作用 - 最高温度响应曲面")
+        ax.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        st.pyplot(fig)
+
+        st.markdown("##### 详细数据表")
+        df_table = pd.DataFrame(
+            t_max_grid,
+            index=[f"{v:.4f}" for v in param1_vals],
+            columns=[f"{v:.4f}" for v in param2_vals],
+        )
+        df_table.index.name = two_sens_result["param1_label"] + " ↓"
+        st.dataframe(df_table.style.format("{:.2f}"))
+
 
 def _render_safety_boundary(time_s, temperature):
     st.markdown("---")
@@ -299,65 +413,111 @@ def _render_safety_boundary(time_s, temperature):
 
     col1, col2 = st.columns([1, 3])
     with col1:
-        threshold = st.number_input("温度安全阈值 (°C)", value=45.0, min_value=30.0, max_value=80.0, step=1.0, key="th_threshold")
+        temp_threshold = st.number_input("温度安全阈值 (°C)", value=45.0, min_value=30.0, max_value=80.0, step=1.0, key="th_threshold")
+        rate_threshold = st.number_input("温升速率阈值 (°C/min)", value=0.5, min_value=0.1, max_value=5.0, step=0.1, key="th_rate_threshold")
         safety_btn = st.button("运行安全分析", key="th_safety_run")
 
     if safety_btn or "th_safety_result" in st.session_state:
         if safety_btn:
             with st.spinner("安全边界分析中..."):
-                safety_analyzer = ThermalSafetyAnalyzer(temp_threshold=threshold)
+                safety_analyzer = ThermalSafetyAnalyzer(temp_threshold=temp_threshold, rate_threshold=rate_threshold)
                 safety_result = safety_analyzer.analyze(time_s, temperature)
                 st.session_state["th_safety_result"] = safety_result
-                st.session_state["th_safety_threshold"] = threshold
+                st.session_state["th_safety_temp_threshold"] = temp_threshold
+                st.session_state["th_safety_rate_threshold"] = rate_threshold
 
         safety_result = st.session_state["th_safety_result"]
-        threshold = st.session_state["th_safety_threshold"]
+        temp_threshold = st.session_state["th_safety_temp_threshold"]
+        rate_threshold = st.session_state["th_safety_rate_threshold"]
 
-        mc1, mc2, mc3 = st.columns(3)
+        mc1, mc2, mc3, mc4 = st.columns(4)
         with mc1:
             st.metric("最高温度 (°C)", f"{safety_result['max_temperature']:.2f}")
         with mc2:
-            st.metric("超温风险", "⚠️ 是" if safety_result["has_risk"] else "✅ 否")
+            st.metric("最大温升速率 (°C/min)", f"{safety_result['max_temp_rate']:.3f}")
         with mc3:
-            st.metric("超温时段数", len(safety_result["over_periods"]))
+            st.metric("超温风险", "⚠️ 是" if safety_result["has_risk"] else "✅ 否")
+        with mc4:
+            total_alerts = len(safety_result["over_temp_periods"]) + len(safety_result["over_rate_periods"])
+            st.metric("预警时段总数", total_alerts)
 
-        fig, ax = plt.subplots(figsize=(12, 5))
-        ax.plot(time_s, temperature, "r-", label="仿真温度", linewidth=1.2)
-        ax.axhline(y=threshold, color="red", linestyle="--", linewidth=1.5, label=f"安全阈值 ({threshold}°C)")
+        fig, axes = plt.subplots(2, 1, figsize=(12, 7), sharex=True, gridspec_kw={"height_ratios": [2, 1]})
 
-        if safety_result["has_risk"]:
-            over_mask = safety_result["over_temperature_mask"]
-            min_len = min(len(time_s), len(over_mask))
-            ax.fill_between(
+        ax_temp = axes[0]
+        ax_temp.plot(time_s, temperature, "r-", label="仿真温度", linewidth=1.2)
+        ax_temp.axhline(y=temp_threshold, color="red", linestyle="--", linewidth=1.5, label=f"温度阈值 ({temp_threshold}°C)")
+
+        over_temp_mask = safety_result["over_temperature_mask"]
+        min_len = min(len(time_s), len(over_temp_mask))
+        if over_temp_mask.any():
+            ax_temp.fill_between(
                 time_s[:min_len],
                 temperature[:min_len],
-                threshold,
-                where=over_mask[:min_len],
+                temp_threshold,
+                where=over_temp_mask[:min_len],
                 color="red",
                 alpha=0.3,
                 label="超温区域",
             )
 
-        ax.set_ylabel("温度 (°C)")
-        ax.set_xlabel("时间 (s)")
-        ax.legend(fontsize=9)
-        ax.grid(True, alpha=0.3)
+        over_rate_mask = safety_result["over_rate_mask"]
+        min_len_r = min(len(time_s), len(over_rate_mask))
+        if over_rate_mask.any():
+            y_min = min(np.min(temperature), temp_threshold) - 2
+            ax_temp.fill_between(
+                time_s[:min_len_r],
+                y_min,
+                temperature[:min_len_r],
+                where=over_rate_mask[:min_len_r],
+                color="orange",
+                alpha=0.2,
+                label="温升速率预警区域",
+            )
+
+        ax_temp.set_ylabel("温度 (°C)")
+        ax_temp.set_title("温度曲线与预警区域")
+        ax_temp.legend(fontsize=8, loc="upper right")
+        ax_temp.grid(True, alpha=0.3)
+
+        ax_rate = axes[1]
+        temp_rate = safety_result["temp_rate"]
+        ax_rate.plot(time_s, temp_rate, "b-", label="温升速率", linewidth=1.0)
+        ax_rate.axhline(y=rate_threshold, color="orange", linestyle="--", linewidth=1.5, label=f"速率阈值 ({rate_threshold}°C/min)")
+        if over_rate_mask.any():
+            ax_rate.fill_between(
+                time_s[:min_len_r],
+                temp_rate[:min_len_r],
+                rate_threshold,
+                where=over_rate_mask[:min_len_r],
+                color="orange",
+                alpha=0.3,
+                label="超速率区域",
+            )
+        ax_rate.set_ylabel("温升速率 (°C/min)")
+        ax_rate.set_xlabel("时间 (s)")
+        ax_rate.legend(fontsize=8)
+        ax_rate.grid(True, alpha=0.3)
+
         plt.tight_layout()
         st.pyplot(fig)
 
-        if safety_result["over_periods"]:
-            st.markdown("##### ⚠️ 超温时段详情")
-            over_df = pd.DataFrame(safety_result["over_periods"])
+        all_periods = safety_result["all_alert_periods"]
+        if all_periods:
+            st.markdown("##### ⚠️ 预警时段详情")
+            alert_df = pd.DataFrame(all_periods)
             display_cols = {
+                "type": "预警类型",
                 "start_time_s": "起始时间 (s)",
                 "end_time_s": "结束时间 (s)",
                 "duration_s": "持续时间 (s)",
-                "peak_temperature": "峰值温度 (°C)",
+                "peak_value": "峰值",
             }
-            rename = {k: v for k, v in display_cols.items() if k in over_df.columns}
-            st.table(over_df.rename(columns=rename)[list(rename.values())])
+            rename = {k: v for k, v in display_cols.items() if k in alert_df.columns}
+            display_df = alert_df.rename(columns=rename)[list(rename.values())]
+            display_df["峰值"] = display_df["峰值"].apply(lambda x: f"{x:.2f}")
+            st.table(display_df)
         else:
-            st.success("仿真全程未超过安全阈值 ✅")
+            st.success("仿真全程未触发任何安全预警 ✅")
 
 
 def _render_inconsistency_analysis(dm, sel_pack, params, t_initial, ambient_config):
@@ -494,6 +654,141 @@ def _render_inconsistency_analysis(dm, sel_pack, params, t_initial, ambient_conf
             }
             rename = {k: v for k, v in display_cols.items() if k in warn_df.columns}
             st.table(warn_df.rename(columns=rename)[list(rename.values())])
+
+    st.markdown("---")
+    st.subheader("🔥 热失控传播风险评估")
+
+    runaway_btn_visible = "th_incon_module_temps" in st.session_state
+
+    col1, col2 = st.columns(2)
+    with col1:
+        runaway_threshold = st.number_input(
+            "热失控起始阈值 (°C)", value=80.0, min_value=60.0, max_value=120.0, step=5.0, key="th_runaway_threshold"
+        )
+        warning_threshold = st.number_input(
+            "预警温度阈值 (°C)", value=55.0, min_value=40.0, max_value=80.0, step=5.0, key="th_runaway_warn_threshold"
+        )
+    with col2:
+        thermal_cond = st.number_input(
+            "模组间热传导系数 (W/(m·K))", value=0.8, min_value=0.1, max_value=5.0, step=0.1, key="th_thermal_cond"
+        )
+        module_dist = st.number_input(
+            "模组间距 (m)", value=0.02, min_value=0.005, max_value=0.1, step=0.005, format="%.3f", key="th_module_dist"
+        )
+
+    runaway_btn = st.button("运行热失控风险评估", key="th_runaway_run", disabled=not runaway_btn_visible)
+    if not runaway_btn_visible:
+        st.caption("请先运行不一致性分析以获取模组温度数据")
+
+    if runaway_btn or "th_runaway_result" in st.session_state:
+        if runaway_btn:
+            with st.spinner("热失控传播风险评估中..."):
+                module_temps = st.session_state["th_incon_module_temps"]
+                common_time_s = st.session_state["th_incon_time_s"]
+                runaway_analyzer = ThermalRunawayAnalyzer(
+                    runaway_threshold=runaway_threshold,
+                    warning_threshold=warning_threshold,
+                    thermal_conductivity=thermal_cond,
+                    module_mass_kg=params["mass_kg"],
+                    module_cp_j_kgk=params["cp_j_kgk"],
+                    module_distance_m=module_dist,
+                )
+                runaway_result = runaway_analyzer.analyze(module_temps, common_time_s)
+                st.session_state["th_runaway_result"] = runaway_result
+
+        if "th_runaway_result" not in st.session_state:
+            return
+
+        runaway_result = st.session_state["th_runaway_result"]
+        module_status = runaway_result["module_status"]
+        module_ids = runaway_result["module_ids"]
+
+        mc1, mc2, mc3, mc4 = st.columns(4)
+        n_warning = sum(1 for s in module_status.values() if s["has_warning"])
+        n_runaway = sum(1 for s in module_status.values() if s["has_runaway"])
+        with mc1:
+            st.metric("触发热预警模组数", n_warning)
+        with mc2:
+            st.metric("触发热失控模组数", n_runaway)
+        with mc3:
+            risk_level = "🔴 高风险" if n_runaway > 0 else ("🟡 中风险" if n_warning > 0 else "🟢 低风险")
+            st.metric("热失控风险等级", risk_level)
+        with mc4:
+            first_runaway = None
+            for s in module_status.values():
+                if s["runaway_time_s"] is not None:
+                    if first_runaway is None or s["runaway_time_s"] < first_runaway:
+                        first_runaway = s["runaway_time_s"]
+            st.metric("首个热失控时间 (s)", f"{first_runaway:.1f}" if first_runaway is not None else "N/A")
+
+        st.markdown("#### 📊 模组状态时间线 (甘特图)")
+        fig, ax = plt.subplots(figsize=(12, max(4, 0.5 * len(module_ids) + 2)))
+
+        time_max = runaway_result["time_s"][-1]
+        colors_normal = "#27ae60"
+        colors_warning = "#f39c12"
+        colors_runaway = "#e74c3c"
+
+        for i, mid in enumerate(module_ids):
+            status = module_status[mid]
+            t_warn = status["warning_time_s"]
+            t_runaway = status["runaway_time_s"]
+
+            if t_warn is None and t_runaway is None:
+                ax.barh(i, time_max, left=0, height=0.6, color=colors_normal, alpha=0.7, label="正常" if i == 0 else "")
+            else:
+                t_normal_end = t_warn if t_warn is not None else time_max
+                if t_normal_end > 0:
+                    ax.barh(i, t_normal_end, left=0, height=0.6, color=colors_normal, alpha=0.7, label="正常" if i == 0 else "")
+
+                if t_warn is not None:
+                    t_warn_end = t_runaway if t_runaway is not None else time_max
+                    warn_duration = t_warn_end - t_warn
+                    if warn_duration > 0:
+                        ax.barh(i, warn_duration, left=t_warn, height=0.6, color=colors_warning, alpha=0.8, label="预警" if i == 0 else "")
+
+                if t_runaway is not None:
+                    runaway_duration = time_max - t_runaway
+                    if runaway_duration > 0:
+                        ax.barh(i, runaway_duration, left=t_runaway, height=0.6, color=colors_runaway, alpha=0.9, label="热失控" if i == 0 else "")
+
+        ax.set_yticks(range(len(module_ids)))
+        ax.set_yticklabels([f"模组 {mid}" for mid in module_ids])
+        ax.set_xlabel("时间 (s)")
+        ax.set_title("各模组热状态时间线")
+        ax.legend(loc="upper right", fontsize=9)
+        ax.grid(True, alpha=0.3, axis="x")
+        ax.set_xlim(0, time_max)
+        ax.invert_yaxis()
+
+        plt.tight_layout()
+        st.pyplot(fig)
+
+        st.markdown("#### 📋 模组热状态详情")
+        status_data = []
+        for mid in module_ids:
+            s = module_status[mid]
+            status_data.append({
+                "模组编号": mid,
+                "最高温度 (°C)": f"{np.max(s['temperatures']):.2f}",
+                "预警时间 (s)": f"{s['warning_time_s']:.1f}" if s["warning_time_s"] is not None else "未触发",
+                "热失控时间 (s)": f"{s['runaway_time_s']:.1f}" if s["runaway_time_s"] is not None else "未触发",
+            })
+        st.table(pd.DataFrame(status_data))
+
+        if runaway_result["propagation_times"]:
+            st.markdown("#### ⚡ 热失控传播时间估算")
+            prop_data = []
+            for key, t_prop in runaway_result["propagation_times"].items():
+                if t_prop is not None:
+                    prop_data.append({
+                        "传播路径": key,
+                        "估算传播时间 (s)": f"{t_prop:.1f}",
+                    })
+            if prop_data:
+                st.table(pd.DataFrame(prop_data))
+            else:
+                st.info("无可用的热失控传播路径")
 
 
 def render():
