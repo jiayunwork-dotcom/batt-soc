@@ -124,7 +124,7 @@ def _render_coupling_analysis(dm, sel_pack, sel_mod, df, params, t_initial, ambi
             st.session_state["th_sim_soc"] = soc
 
     if "th_sim_result" not in st.session_state:
-        st.info("请点击"运行热仿真"开始计算")
+        st.info('请点击"运行热仿真"开始计算')
         return
 
     sim_result = st.session_state["th_sim_result"]
