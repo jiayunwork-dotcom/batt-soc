@@ -30,6 +30,15 @@ class BatteryDiagnosis:
         r0 = r0_0 + k_r * cycles + np.random.randn(n_cycles) * 0.00005
         r1 = 0.005 + k_r1 * cycles + np.random.randn(n_cycles) * 0.00005
 
+        abnormal_cycles = []
+        if n_cycles > 20:
+            n_abnormal = min(2, n_cycles // 25)
+            abnormal_cycles = np.random.choice(np.arange(10, n_cycles - 5), n_abnormal, replace=False).tolist()
+
+        temp_rise_normal = np.random.uniform(3.0, 5.0, n_cycles)
+        for ab_idx in abnormal_cycles:
+            temp_rise_normal[ab_idx] = np.random.uniform(10.0, 12.0)
+
         cycle_df = pd.DataFrame({
             "循环次数": cycles,
             "放电容量(Ah)": capacity,
@@ -38,6 +47,7 @@ class BatteryDiagnosis:
             "tau(s)": r1 * (1000 + 10 * cycles + np.random.randn(n_cycles) * 50),
             "充电时间(s)": 3600 + 50 * cycles + np.random.randn(n_cycles) * 30,
             "恒压段时长(s)": 600 + 30 * cycles + np.random.randn(n_cycles) * 20,
+            "充电温升(°C)": temp_rise_normal,
         })
 
         cycle_charge_data = []
@@ -57,13 +67,21 @@ class BatteryDiagnosis:
             q_cumulative = q_cap * q_cumulative / q_cumulative.max()
             ts_start = datetime(2024, 1, 1) + timedelta(days=i)
             timestamps = [ts_start + timedelta(seconds=j * 10) for j in range(n_points)]
+
+            temp_start = 25.0 + np.random.randn() * 0.3
+            temp_end = temp_start + temp_rise_normal[i]
+            temp_profile = np.linspace(temp_start, temp_end, n_points)
+            temp_profile += np.random.randn(n_points) * 0.2
+            mid_idx = n_points // 2
+            temp_profile[mid_idx:] += np.linspace(0, 0.5, n_points - mid_idx) * np.random.randn()
+
             df_cycle = pd.DataFrame({
                 "timestamp": timestamps,
                 "voltage": v + np.random.randn(n_points) * 0.002,
                 "capacity": q_cumulative,
                 "dqdv_raw": dqdv,
                 "current": np.ones(n_points) * (q_cap / (n_points * 10)) * 3600,
-                "temperature": 25.0 + np.random.randn(n_points) * 0.5,
+                "temperature": temp_profile,
             })
             cycle_charge_data.append(df_cycle)
 
@@ -401,17 +419,53 @@ class BatteryDiagnosis:
         cycle_df: pd.DataFrame,
         dqdv_results: dict,
         soh_models: dict,
+        cycle_charge_data: Optional[list[pd.DataFrame]] = None,
         thresholds: Optional[dict] = None,
     ) -> list[dict]:
-        if thresholds is None:
-            thresholds = {
-                "r_sudden_increase": 0.15,
-                "capacity_jump": 0.03,
-                "peak_disappear_ratio": 0.3,
-                "soh_consistency_std": 5.0,
-            }
+        default_thresholds = {
+            "r_sudden_increase": 0.15,
+            "capacity_jump": 0.03,
+            "peak_disappear_ratio": 0.3,
+            "soh_consistency_std": 5.0,
+            "charge_temp_rise": 8.0,
+        }
+        if thresholds is not None:
+            default_thresholds.update(thresholds)
+        thresholds = default_thresholds
         events = []
         cycles = cycle_df["循环次数"].values
+
+        charge_temp_rises = []
+        if "充电温升(°C)" in cycle_df.columns:
+            charge_temp_rises = cycle_df["充电温升(°C)"].values
+        elif cycle_charge_data is not None:
+            for i, df_charge in enumerate(cycle_charge_data):
+                if df_charge is not None and "temperature" in df_charge.columns and len(df_charge) >= 2:
+                    temps = df_charge["temperature"].values.astype(float)
+                    valid = ~np.isnan(temps)
+                    if valid.sum() >= 2:
+                        temp_start = float(temps[valid][0])
+                        temp_end = float(temps[valid][-1])
+                        temp_rise = temp_end - temp_start
+                        charge_temp_rises.append(temp_rise)
+                    else:
+                        charge_temp_rises.append(np.nan)
+                else:
+                    charge_temp_rises.append(np.nan)
+            charge_temp_rises = np.array(charge_temp_rises)
+
+        if len(charge_temp_rises) > 0 and len(charge_temp_rises) == len(cycles):
+            for i, cyc in enumerate(cycles):
+                temp_rise = charge_temp_rises[i]
+                if not np.isnan(temp_rise) and temp_rise > thresholds["charge_temp_rise"]:
+                    events.append({
+                        "时间": datetime.now(),
+                        "循环次数": int(cyc),
+                        "触发规则": "温度异常",
+                        "严重等级": "警告",
+                        "数据快照": f"充电温升={temp_rise:.1f}°C, 阈值={thresholds['charge_temp_rise']:.1f}°C",
+                    })
+
         if "R0(Ω)" in cycle_df.columns:
             r0 = cycle_df["R0(Ω)"].values
             for i in range(1, len(r0)):
@@ -485,6 +539,55 @@ class BatteryDiagnosis:
         return events
 
     # ========== 5. 诊断报告 ==========
+    def compute_soh_decay_rates(self, soh_values: np.ndarray, cycles: np.ndarray, window_size: int = 5) -> dict:
+        soh_values = np.asarray(soh_values, dtype=float)
+        cycles = np.asarray(cycles, dtype=float)
+        n = len(soh_values)
+        if n < 10:
+            return {"error": "数据不足10个循环，无法进行衰减速率分析"}
+        rates = []
+        window_centers = []
+        accelerating_flags = []
+        for i in range(n - window_size + 1):
+            x = cycles[i:i + window_size]
+            y = soh_values[i:i + window_size]
+            valid = ~np.isnan(x) & ~np.isnan(y)
+            if valid.sum() < 3:
+                rates.append(np.nan)
+                window_centers.append(np.nan)
+                continue
+            x_valid = x[valid]
+            y_valid = y[valid]
+            try:
+                slope, _ = np.polyfit(x_valid, y_valid, 1)
+                rates.append(float(slope))
+                window_centers.append(float(cycles[i + window_size // 2]))
+            except Exception:
+                rates.append(np.nan)
+                window_centers.append(np.nan)
+        rates = np.array(rates)
+        window_centers = np.array(window_centers)
+        valid_rates = ~np.isnan(rates)
+        for i in range(len(rates)):
+            if i == 0 or not valid_rates[i] or not valid_rates[i - 1]:
+                accelerating_flags.append(False)
+            else:
+                prev_rate = rates[i - 1]
+                curr_rate = rates[i]
+                if prev_rate < 0 and curr_rate < 0:
+                    if abs(curr_rate) > abs(prev_rate) * 1.2:
+                        accelerating_flags.append(True)
+                    else:
+                        accelerating_flags.append(False)
+                else:
+                    accelerating_flags.append(False)
+        return {
+            "window_centers": window_centers[valid_rates].tolist(),
+            "decay_rates": rates[valid_rates].tolist(),
+            "accelerating": [accelerating_flags[i] for i in range(len(accelerating_flags)) if valid_rates[i]],
+            "window_size": window_size,
+        }
+
     def generate_diagnosis_report(
         self,
         cycle_df: pd.DataFrame,
@@ -538,6 +641,21 @@ class BatteryDiagnosis:
                                 remaining_cycles = float(N_test[-1] - current_max_cycle)
                 except Exception:
                     remaining_cycles = np.nan
+        soh_decay_analysis = None
+        if "容量衰减模型" in soh_models:
+            m = soh_models["容量衰减模型"]
+            cycles_key = "cycles_all" if "cycles_all" in m else "cycles"
+            soh_pred_key = "soh_pred"
+            if cycles_key in m and soh_pred_key in m:
+                cycles = m[cycles_key]
+                soh_pred = m[soh_pred_key]
+                n = len(cycles)
+                if n >= 10:
+                    last_10_cycles = cycles[-10:]
+                    last_10_soh = soh_pred[-10:]
+                    soh_decay_analysis = self.compute_soh_decay_rates(last_10_soh, last_10_cycles, window_size=5)
+                else:
+                    soh_decay_analysis = {"error": f"数据不足10个循环，当前只有{n}个循环"}
         suggestions = []
         fault_types = set(ev["触发规则"] for ev in fault_events)
         if "内阻突增" in fault_types:
@@ -548,6 +666,11 @@ class BatteryDiagnosis:
             suggestions.append("dQ/dV主峰严重衰减，表明电池内部活性物质损失严重，电池已接近寿命终点，建议尽快更换。")
         if "SOH一致性异常" in fault_types:
             suggestions.append("多模型SOH估计偏差较大，建议补充更多循环数据重新训练模型，并检查传感器测量精度。")
+        if "温度异常" in fault_types:
+            suggestions.append("检测到充电温升异常，建议检查冷却系统是否正常工作，降低充电电流或改善散热条件。")
+        if soh_decay_analysis and "error" not in soh_decay_analysis:
+            if any(soh_decay_analysis.get("accelerating", [])):
+                suggestions.append("检测到SOH衰减速率加速，表明电池老化进程加快，建议缩短监测周期并评估更换计划。")
         if not suggestions:
             if health_score >= 80:
                 suggestions.append("电池状态良好，建议继续按照当前工况运行，定期进行健康检查。")
@@ -562,4 +685,5 @@ class BatteryDiagnosis:
             "剩余寿命预估(循环)": float(remaining_cycles) if not np.isnan(remaining_cycles) else None,
             "故障事件数": len(fault_events),
             "维护建议": suggestions,
+            "SOH衰减速率分析": soh_decay_analysis,
         }

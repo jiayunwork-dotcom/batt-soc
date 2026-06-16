@@ -300,20 +300,39 @@ def render():
                 st.markdown("#### 模型性能指标")
                 st.dataframe(pd.DataFrame(metric_rows), width="stretch", hide_index=True)
 
+            model_names = list(models.keys())
+            st.markdown("**选择显示的模型**")
+            checkbox_cols = st.columns(len(model_names))
+            selected_models = []
+            model_latest_soh = {}
+            for i, name in enumerate(model_names):
+                m = models[name]
+                latest_soh = float(m["soh_pred"][-1])
+                model_latest_soh[name] = latest_soh
+                with checkbox_cols[i]:
+                    if st.checkbox(f"{name} ({latest_soh:.1f}%)", value=True, key=f"diag_soh_cb_{name}"):
+                        selected_models.append(name)
+
             fig, ax = plt.subplots(figsize=(10, 6))
             soh_true_plotted = False
-            for name, m in models.items():
+            colors = plt.cm.tab10(np.linspace(0, 1, len(model_names)))
+            color_map = dict(zip(model_names, colors))
+
+            for name in selected_models:
+                m = models[name]
+                color = color_map[name]
+                latest_soh = model_latest_soh[name]
                 if "cycles_all" in m:
                     cyc = m["cycles_all"]
                     pred = m["soh_pred"]
-                    ax.plot(cyc, pred, label=f"{name} (RMSE={m.get('rmse', 0):.2f}%)", linewidth=2)
+                    ax.plot(cyc, pred, label=f"{name} | 最新: {latest_soh:.1f}% | RMSE={m.get('rmse', 0):.2f}%", linewidth=2, color=color)
                     if "soh_true" in m and not soh_true_plotted:
                         ax.scatter(cyc, m["soh_true"], color="black", alpha=0.4, s=20, label="真实SOH", zorder=2)
                         soh_true_plotted = True
                 elif "cycles" in m:
                     cyc = m["cycles"]
                     pred = m["soh_pred"]
-                    ax.plot(cyc, pred, label=f"{name} (RMSE={m.get('rmse', 0):.2f}%)", linewidth=2)
+                    ax.plot(cyc, pred, label=f"{name} | 最新: {latest_soh:.1f}% | RMSE={m.get('rmse', 0):.2f}%", linewidth=2, color=color)
                     if "soh_true" in m and not soh_true_plotted:
                         ax.scatter(cyc, m["soh_true"], color="black", alpha=0.4, s=20, label="真实SOH", zorder=2)
                         soh_true_plotted = True
@@ -340,6 +359,7 @@ def render():
         with col1:
             thr_r = st.slider("内阻突增阈值(%)", 5, 50, 15, key="diag_thr_r") / 100.0
             thr_cap = st.slider("容量跳变阈值(%)", 1, 20, 3, key="diag_thr_cap") / 100.0
+            thr_temp = st.slider("充电温升阈值(°C)", 3, 15, 8, key="diag_thr_temp")
         with col2:
             thr_peak = st.slider("dQ/dV峰值消失阈值(首循环%)", 10, 80, 30, key="diag_thr_peak") / 100.0
             thr_soh = st.slider("SOH一致性标准差阈值(%)", 1, 20, 5, key="diag_thr_soh")
@@ -349,6 +369,7 @@ def render():
             "capacity_jump": float(thr_cap),
             "peak_disappear_ratio": float(thr_peak),
             "soh_consistency_std": float(thr_soh),
+            "charge_temp_rise": float(thr_temp),
         }
 
         if st.button("运行故障检测", key="diag_run_fault"):
@@ -362,6 +383,7 @@ def render():
                         cycle_df,
                         st.session_state.diag_dqdv_results if st.session_state.diag_dqdv_results else {},
                         st.session_state.diag_soh_models if st.session_state.diag_soh_models else {},
+                        st.session_state.diag_charge_data if st.session_state.diag_charge_data else None,
                         thresholds,
                     )
                     st.session_state.diag_fault_events = events
@@ -372,7 +394,25 @@ def render():
 
         if st.session_state.diag_fault_events:
             events = st.session_state.diag_fault_events
-            st.markdown(f"#### 故障日志 (共 {len(events)} 条)")
+            col_header, col_btn = st.columns([3, 1])
+            with col_header:
+                st.markdown(f"#### 故障日志 (共 {len(events)} 条)")
+            with col_btn:
+                event_df_raw = pd.DataFrame(events)
+                csv_export_df = event_df_raw.copy()
+                if "时间" in csv_export_df.columns:
+                    csv_export_df["时间"] = csv_export_df["时间"].apply(
+                        lambda x: x.strftime("%Y-%m-%d %H:%M:%S") if hasattr(x, "strftime") else str(x)
+                    )
+                csv_data = csv_export_df.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+                st.download_button(
+                    label="📥 导出CSV",
+                    data=csv_data,
+                    file_name=f"fault_events_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv",
+                    disabled=False,
+                    key="diag_export_csv",
+                )
             level_color = {"警告": "🟡", "严重": "🟠", "危险": "🔴"}
             event_df = pd.DataFrame(events)
             if "严重等级" in event_df.columns:
@@ -389,7 +429,12 @@ def render():
             ax.set_ylabel("数量")
             st.pyplot(fig)
         else:
-            st.info("暂无故障事件，请运行故障检测")
+            col_header, col_btn = st.columns([3, 1])
+            with col_header:
+                st.info("暂无故障事件，请运行故障检测")
+            with col_btn:
+                if st.button("📥 导出CSV", key="diag_export_csv_disabled", disabled=True, help="无故障事件可导出"):
+                    pass
 
     with report_tab:
         st.markdown("#### 诊断报告")
@@ -446,6 +491,56 @@ def render():
                 st.markdown("#### 维护建议")
                 for i, s in enumerate(report.get("维护建议", [])):
                     st.info(f"💡 建议{i+1}: {s}")
+
+            with st.expander("📉 SOH衰减速率趋势分析", expanded=True):
+                decay_analysis = report.get("SOH衰减速率分析")
+                if decay_analysis is None:
+                    st.info("请先拟合容量衰减模型以进行衰减速率分析")
+                elif "error" in decay_analysis:
+                    st.warning(decay_analysis["error"])
+                else:
+                    window_centers = decay_analysis["window_centers"]
+                    decay_rates = decay_analysis["decay_rates"]
+                    accelerating = decay_analysis["accelerating"]
+                    window_size = decay_analysis["window_size"]
+
+                    st.markdown(f"**分析说明**: 使用最近10个循环的SOH数据，以{window_size}个循环为滑动窗口计算衰减速率，窗口内做线性回归取斜率作为衰减速率。")
+
+                    fig, ax = plt.subplots(figsize=(10, 5))
+                    rates_arr = np.array(decay_rates)
+                    centers_arr = np.array(window_centers)
+                    accel_arr = np.array(accelerating)
+
+                    normal_mask = ~accel_arr
+                    accel_mask = accel_arr
+
+                    if normal_mask.any():
+                        ax.plot(centers_arr[normal_mask], rates_arr[normal_mask], "bo-", label="正常衰减速率", linewidth=2, markersize=8)
+                    if accel_mask.any():
+                        ax.plot(centers_arr[accel_mask], rates_arr[accel_mask], "ro-", label="加速衰减(>20%)", linewidth=2, markersize=8)
+
+                    ax.axhline(y=0, color="gray", linestyle="--", alpha=0.5, linewidth=1)
+                    ax.set_xlabel("循环次数(窗口中心)")
+                    ax.set_ylabel("SOH衰减速率 (%/循环)")
+                    ax.set_title(f"滑动窗口SOH衰减速率趋势 (窗口大小={window_size})")
+                    ax.legend()
+                    ax.grid(True, alpha=0.3)
+                    plt.tight_layout()
+                    st.pyplot(fig)
+
+                    if any(accelerating):
+                        accel_cycles = [centers_arr[i] for i in range(len(accelerating)) if accelerating[i]]
+                        st.error(f"⚠️ 检测到衰减加速窗口: 循环 {', '.join([f'{int(c)}' for c in accel_cycles])}，建议加强监控并缩短维护周期")
+                    else:
+                        st.success("✅ 衰减速率稳定，未检测到明显加速")
+
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("平均衰减速率", f"{np.mean(rates_arr):.4f} %/循环")
+                    with col2:
+                        st.metric("最小衰减速率", f"{np.min(rates_arr):.4f} %/循环")
+                    with col3:
+                        st.metric("最大衰减速率", f"{np.max(rates_arr):.4f} %/循环")
 
             with st.expander("📊 趋势数据汇总", expanded=False):
                 if st.session_state.diag_cycle_df is not None:
