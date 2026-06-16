@@ -4,6 +4,7 @@ from .ocv_soc import OCVSOCCalibrator
 from .kalman_filter import EKF, UKF
 from .life_prediction import LifePrediction
 from .consistency import ConsistencyAnalyzer
+from .thermal_model import LumpedThermalModel, ThermalSensitivityAnalyzer, ThermalSafetyAnalyzer, ThermalInconsistencyAnalyzer
 from .report import ReportGenerator
 
 __all__ = [
@@ -14,5 +15,9 @@ __all__ = [
     "UKF",
     "LifePrediction",
     "ConsistencyAnalyzer",
+    "LumpedThermalModel",
+    "ThermalSensitivityAnalyzer",
+    "ThermalSafetyAnalyzer",
+    "ThermalInconsistencyAnalyzer",
     "ReportGenerator",
 ]

@@ -38,6 +38,7 @@ page = st.sidebar.radio(
         "🔧 等效电路模型参数辨识",
         "📈 OCV-SOC曲线标定",
         "🎯 卡尔曼滤波SOC估计",
+        "🌡️ 电池热管理仿真与分析",
         "🔮 循环寿命预测",
         "⚠️ 一致性分析与预警",
         "📑 报告导出",
@@ -64,6 +65,7 @@ if page == "🏠 首页":
         - **参数辨识**：基于HPPC脉冲辨识一阶/二阶RC等效电路模型参数
         - **OCV-SOC标定**：低倍率充放电法或增量电压法标定OCV-SOC曲线
         - **SOC估计**：EKF/UKF卡尔曼滤波算法估计电池SOC
+        - **热管理仿真**：集总参数热模型仿真、热-电耦合分析与安全边界评估
         - **寿命预测**：多模型容量衰减建模与剩余寿命预测
         - **一致性分析**：Pack内模组一致性评估与智能预警
         - **报告导出**：一键生成PDF健康评估报告
@@ -85,6 +87,10 @@ elif page == "📈 OCV-SOC曲线标定":
 elif page == "🎯 卡尔曼滤波SOC估计":
     from ui_pages import kalman_page
     kalman_page.render()
+
+elif page == "🌡️ 电池热管理仿真与分析":
+    from ui_pages import thermal_page
+    thermal_page.render()
 
 elif page == "🔮 循环寿命预测":
     from ui_pages import life_page

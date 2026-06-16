@@ -4,6 +4,7 @@ from . import ocv_soc_page
 from . import kalman_page
 from . import life_page
 from . import consistency_page
+from . import thermal_page
 from . import report_page
 
 __all__ = [
@@ -13,5 +14,6 @@ __all__ = [
     "kalman_page",
     "life_page",
     "consistency_page",
+    "thermal_page",
     "report_page",
 ]
